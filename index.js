@@ -4,16 +4,17 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const {
-  Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
-  ButtonStyle, SlashCommandBuilder, PermissionFlagsBits, REST, Routes, MessageFlags,
+  Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  SlashCommandBuilder, PermissionFlagsBits, ChannelType, REST, Routes, MessageFlags,
 } = require('discord.js');
 
 /* ---------- Config ---------- */
 const { TOKEN, CLIENT_ID, CLIENT_SECRET } = process.env;
 const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '');
 const PORT = process.env.PORT || 3000;
+const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 const SECRET = process.env.SESSION_SECRET || crypto.createHash('sha256').update(String(TOKEN)).digest('hex');
-if (!BASE_URL) console.warn('⚠️ BASE_URL غير محدد، الأزرار والتسجيل ما بيشتغلون.');
+if (!BASE_URL) console.warn('⚠️ BASE_URL غير محدد، اللوحة ما بتشتغل.');
 
 /* ---------- Storage (JSON file) ---------- */
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -45,35 +46,34 @@ function buildEmbed(poll, id, counts) {
   const ended = isEnded(poll);
   const total = counts.reduce((a, b) => a + b, 0);
   const desc = poll.options.map((o, i) => {
-    if (!ended) return `**${i + 1}.** ${o.name}`;
     const pct = total ? Math.round((counts[i] / total) * 100) : 0;
     const f = Math.round(pct / 10);
     return `**${i + 1}. ${o.name}**\n${'█'.repeat(f)}${'░'.repeat(10 - f)} ${counts[i]} صوت (${pct}%)`;
-  }).join(ended ? '\n\n' : '\n');
+  }).join('\n\n');
   const ts = Math.floor(poll.endsAt / 1000);
   return new EmbedBuilder()
     .setTitle(`🗳️ ${poll.title}`)
-    .setDescription(desc + (ended ? '' : `\n\n⏰ ينتهي <t:${ts}:R>\nلكل شخص ${poll.maxVotes} أصوات كحد أقصى`))
+    .setDescription(desc + (ended ? '' : `\n\n⏰ ينتهي <t:${ts}:R>\nلكل شخص ${poll.maxVotes} أصوات كحد أقصى • اضغط على اسم عشان تصوّت، واضغط مرة ثانية عشان تسحب صوتك`))
     .setColor(ended ? 0xed4245 : 0x5865f2)
-    .setFooter({ text: ended ? `انتهى • إجمالي الأصوات: ${total}` : `ID: ${id}` });
+    .setFooter({ text: ended ? `انتهى • إجمالي الأصوات: ${total}` : `إجمالي الأصوات: ${total} • ID: ${id}` });
 }
 
-function buildLinkRow(id) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('افتح صفحة التصويت').setURL(`${BASE_URL}/poll/${id}`),
-  );
-}
-
-async function parseOption(raw, guild) {
-  raw = raw.trim();
-  let m = raw.match(/^<@!?(\d{17,20})>$/);
-  if (m) {
-    const mem = await guild.members.fetch(m[1]).catch(() => null);
-    return { name: mem ? mem.displayName : 'مرشح', userId: m[1] };
+function buildButtons(poll, id, disabled = false) {
+  const rows = [];
+  for (let i = 0; i < poll.options.length; i += 5) {
+    const row = new ActionRowBuilder();
+    poll.options.slice(i, i + 5).forEach((o, j) => {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote:${id}:${i + j}`)
+          .setLabel(o.name.slice(0, 80))
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(disabled),
+      );
+    });
+    rows.push(row);
   }
-  m = raw.match(/^(.+?)\s*[:：]\s*(\d{17,20})$/);
-  if (m) return { name: m[1].trim(), userId: m[2] };
-  return { name: raw, userId: null };
+  return rows;
 }
 
 async function finalize(id) {
@@ -97,6 +97,12 @@ async function finalize(id) {
   }
 }
 
+async function canManage(guild, userId) {
+  if (ADMIN_IDS.includes(userId)) return true;
+  const m = await guild.members.fetch(userId).catch(() => null);
+  return !!m && m.permissions.has(PermissionFlagsBits.ManageGuild);
+}
+
 /* ---------- Discord bot ---------- */
 const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral });
 
@@ -106,11 +112,7 @@ const commands = [
     .setDescription('نظام التصويت')
     .setDMPermission(false)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addSubcommand(s => s.setName('create').setDescription('إنشاء تصويت جديد')
-      .addStringOption(o => o.setName('title').setDescription('عنوان التصويت').setRequired(true))
-      .addStringOption(o => o.setName('options').setDescription('مثال: أحمد:123456789012345678 | خالد:987654321098765432 | سعد').setRequired(true))
-      .addIntegerOption(o => o.setName('max_votes').setDescription('أقصى عدد أصوات لكل شخص (الافتراضي 2)').setMinValue(1).setMaxValue(10))
-      .addIntegerOption(o => o.setName('hours').setDescription('مدة التصويت بالساعات (الافتراضي 24)').setMinValue(1).setMaxValue(720)))
+    .addSubcommand(s => s.setName('panel').setDescription('رابط لوحة إنشاء التصويتات ومعرفة من صوّت'))
     .addSubcommand(s => s.setName('end').setDescription('إنهاء تصويت الآن')
       .addStringOption(o => o.setName('poll_id').setDescription('ايدي التصويت (تلقاه أسفل الرسالة)').setRequired(true))),
 ].map(c => c.toJSON());
@@ -125,56 +127,63 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (i) => {
   try {
-    if (!(i.isChatInputCommand() && i.commandName === 'poll')) return;
-    const sub = i.options.getSubcommand();
+    /* --- Slash commands --- */
+    if (i.isChatInputCommand() && i.commandName === 'poll') {
+      const sub = i.options.getSubcommand();
 
-    if (sub === 'create') {
-      if (!BASE_URL) return i.reply(ephemeral('❌ BASE_URL غير محدد في المتغيرات.'));
-      await i.deferReply();
+      if (sub === 'panel') {
+        if (!BASE_URL) return i.reply(ephemeral('❌ BASE_URL غير محدد في المتغيرات.'));
+        return i.reply(ephemeral(`🔗 لوحة التصويت: ${BASE_URL}/admin`));
+      }
 
-      const title = i.options.getString('title');
-      const rawOpts = i.options.getString('options').split('|').map(s => s.trim()).filter(Boolean);
-      const maxVotes = i.options.getInteger('max_votes') ?? 2;
-      const hours = i.options.getInteger('hours') ?? 24;
-
-      if (rawOpts.length < 2 || rawOpts.length > 20)
-        return i.editReply('❌ لازم تحط من 2 إلى 20 خيار، وافصل بينهم بـ |');
-      if (maxVotes > rawOpts.length)
-        return i.editReply('❌ عدد الأصوات أكثر من عدد الخيارات.');
-
-      const options = [];
-      for (const r of rawOpts) options.push(await parseOption(r, i.guild));
-
-      const id = crypto.randomBytes(4).toString('hex');
-      const poll = {
-        guildId: i.guildId, channelId: i.channelId, messageId: null, title, options, maxVotes,
-        endsAt: Date.now() + hours * 3600 * 1000, ended: false, finalized: false,
-        createdBy: i.user.id, votes: {},
-      };
-      const msg = await i.editReply({
-        embeds: [buildEmbed(poll, id, getCounts(poll))],
-        components: [buildLinkRow(id)],
-      });
-      poll.messageId = msg.id;
-      db.polls[id] = poll;
-      save();
-      return;
+      if (sub === 'end') {
+        await i.deferReply({ flags: MessageFlags.Ephemeral });
+        const id = i.options.getString('poll_id').trim();
+        const poll = db.polls[id];
+        if (!poll || poll.guildId !== i.guildId) return i.editReply('❌ ما لقيت تصويت بهذا الايدي.');
+        if (poll.finalized) return i.editReply('⚠️ التصويت منتهي أصلاً.');
+        await finalize(id);
+        return i.editReply('✅ تم إنهاء التصويت.');
+      }
     }
 
-    if (sub === 'end') {
-      await i.deferReply({ flags: MessageFlags.Ephemeral });
-      const id = i.options.getString('poll_id').trim();
+    /* --- Vote buttons --- */
+    if (i.isButton() && i.customId.startsWith('vote:')) {
+      const [, id, idxStr] = i.customId.split(':');
+      const idx = parseInt(idxStr, 10);
       const poll = db.polls[id];
-      if (!poll || poll.guildId !== i.guildId) return i.editReply('❌ ما لقيت تصويت بهذا الايدي.');
-      if (poll.finalized) return i.editReply('⚠️ التصويت منتهي أصلاً.');
-      await finalize(id);
-      return i.editReply('✅ تم إنهاء التصويت.');
+      if (!poll) return i.reply(ephemeral('❌ هذا التصويت غير موجود.'));
+      if (isEnded(poll)) {
+        finalize(id);
+        return i.reply(ephemeral('🔒 التصويت منتهي.'));
+      }
+      const opt = poll.options[idx];
+      if (!opt) return i.reply(ephemeral('❌ خيار غير صالح.'));
+      if (opt.userId && opt.userId === i.user.id)
+        return i.reply(ephemeral('❌ ما تقدر تصوّت لنفسك.'));
+
+      const mine = poll.votes[i.user.id] || [];
+      let notice;
+
+      if (mine.includes(idx)) {
+        const rest = mine.filter(v => v !== idx);
+        if (rest.length) poll.votes[i.user.id] = rest; else delete poll.votes[i.user.id];
+        notice = `↩️ سحبت صوتك من **${opt.name}** (${rest.length}/${poll.maxVotes})`;
+      } else {
+        if (mine.length >= poll.maxVotes)
+          return i.reply(ephemeral(`❌ وصلت الحد الأقصى (${poll.maxVotes} أصوات). اضغط على اسم صوّتّ له عشان تسحب صوتك وتغيّره.`));
+        poll.votes[i.user.id] = [...mine, idx];
+        notice = `✅ صوّتّ لـ **${opt.name}** (${mine.length + 1}/${poll.maxVotes})`;
+      }
+      save();
+
+      await i.update({ embeds: [buildEmbed(poll, id, getCounts(poll))], components: buildButtons(poll, id) });
+      await i.followUp(ephemeral(notice));
     }
   } catch (err) {
     console.error(err);
-    const payload = ephemeral('❌ صار خطأ، حاول مرة ثانية.');
-    if (i.deferred || i.replied) i.editReply(payload.content).catch(() => {});
-    else i.reply(payload).catch(() => {});
+    if (i.deferred) i.editReply('❌ صار خطأ، حاول مرة ثانية.').catch(() => {});
+    else if (!i.replied) i.reply(ephemeral('❌ صار خطأ، حاول مرة ثانية.')).catch(() => {});
   }
 });
 
@@ -185,7 +194,7 @@ setInterval(() => {
   }
 }, 30 * 1000);
 
-/* ---------- Web: sessions ---------- */
+/* ---------- Web: sessions & helpers ---------- */
 const sign = (v) => {
   const p = Buffer.from(JSON.stringify(v)).toString('base64url');
   return p + '.' + crypto.createHmac('sha256', SECRET).update(p).digest('base64url');
@@ -212,28 +221,21 @@ const send = (res, code, body, type = 'application/json; charset=utf-8', headers
 const redirect = (res, to, headers = {}) => { res.writeHead(302, { Location: to, ...headers }); res.end(); };
 const readBody = (req) => new Promise((ok, no) => {
   let d = '';
-  req.on('data', c => { d += c; if (d.length > 1e4) { req.destroy(); no(new Error('too big')); } });
+  req.on('data', c => { d += c; if (d.length > 5e4) { req.destroy(); no(new Error('too big')); } });
   req.on('end', () => { try { ok(JSON.parse(d || '{}')); } catch (e) { no(e); } });
 });
 
-function pollView(poll, user, withResults) {
-  const ended = isEnded(poll);
-  const counts = getCounts(poll);
-  const showCounts = withResults || ended;
-  return {
-    title: poll.title,
-    maxVotes: poll.maxVotes,
-    endsAt: poll.endsAt,
-    ended,
-    totalVoters: Object.keys(poll.votes).length,
-    options: poll.options.map((o, i) => ({
-      name: o.name,
-      blocked: !!user && o.userId === user.id,
-      count: showCounts ? counts[i] : undefined,
-    })),
-    mine: user ? (poll.votes[user.id] || []) : [],
-    user: user ? { id: user.id, name: user.name } : null,
-  };
+async function memberName(guild, uid) {
+  const m = guild.members.cache.get(uid) || await guild.members.fetch(uid).catch(() => null);
+  return m ? m.displayName : '(خرج من السيرفر)';
+}
+
+async function managedGuilds(userId) {
+  const list = [];
+  for (const g of client.guilds.cache.values()) {
+    if (await canManage(g, userId)) list.push(g);
+  }
+  return list;
 }
 
 /* ---------- Web: server ---------- */
@@ -245,11 +247,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/') return send(res, 200, 'Vote bot is running', 'text/plain; charset=utf-8');
 
-    // تسجيل الدخول بديسكورد
+    /* --- Discord login --- */
     if (req.method === 'GET' && p === '/login') {
-      let next = url.searchParams.get('next') || '/';
-      if (!/^\/poll\/[a-f0-9]{8}$/.test(next)) next = '/';
-      const state = sign({ next, exp: Date.now() + 10 * 60 * 1000 });
+      const state = sign({ exp: Date.now() + 10 * 60 * 1000 });
       const q = new URLSearchParams({
         client_id: CLIENT_ID, response_type: 'code', scope: 'identify',
         redirect_uri: `${BASE_URL}/callback`, state, prompt: 'none',
@@ -280,45 +280,109 @@ const server = http.createServer(async (req, res) => {
 
       const sid = sign({ id: u.id, name: u.global_name || u.username, exp: Date.now() + 7 * 24 * 3600 * 1000 });
       const secure = BASE_URL.startsWith('https') ? '; Secure' : '';
-      return redirect(res, st.next, { 'Set-Cookie': `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax${secure}` });
+      return redirect(res, '/admin', { 'Set-Cookie': `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax${secure}` });
     }
 
-    // صفحة التصويت
-    let m = p.match(/^\/poll\/([a-f0-9]{8})$/);
-    if (req.method === 'GET' && m) {
-      if (!db.polls[m[1]]) return send(res, 404, 'التصويت غير موجود', 'text/plain; charset=utf-8');
-      return send(res, 200, PAGE, 'text/html; charset=utf-8');
-    }
+    /* --- Admin page --- */
+    if (req.method === 'GET' && p === '/admin') return send(res, 200, PAGE, 'text/html; charset=utf-8');
 
-    // API
-    m = p.match(/^\/api\/poll\/([a-f0-9]{8})(\/vote)?$/);
-    if (m) {
-      const poll = db.polls[m[1]];
-      if (!poll) return send(res, 404, { error: 'التصويت غير موجود' });
+    /* --- Admin API --- */
+    if (p.startsWith('/api/admin/')) {
+      if (!user) return send(res, 401, { error: 'سجّل دخول أول' });
 
-      if (req.method === 'GET' && !m[2]) {
-        return send(res, 200, pollView(poll, user, url.searchParams.get('results') === '1'));
+      // بيانات اللوحة
+      if (req.method === 'GET' && p === '/api/admin/data') {
+        const guilds = await managedGuilds(user.id);
+        const ids = new Set(guilds.map(g => g.id));
+        const polls = [];
+        const entries = Object.entries(db.polls)
+          .filter(([, po]) => ids.has(po.guildId))
+          .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+
+        for (const [id, po] of entries) {
+          const guild = client.guilds.cache.get(po.guildId);
+          const counts = getCounts(po);
+          const options = [];
+          for (let k = 0; k < po.options.length; k++) {
+            const voterIds = Object.entries(po.votes).filter(([, l]) => l.includes(k)).map(([uid]) => uid);
+            const voters = await Promise.all(voterIds.map(async uid => ({ id: uid, name: await memberName(guild, uid) })));
+            options.push({ name: po.options[k].name, userId: po.options[k].userId || null, count: counts[k], voters });
+          }
+          polls.push({
+            id, title: po.title, guildName: guild.name, ended: isEnded(po), endsAt: po.endsAt,
+            totalVoters: Object.keys(po.votes).length, maxVotes: po.maxVotes, options,
+            link: `https://discord.com/channels/${po.guildId}/${po.channelId}/${po.messageId}`,
+          });
+        }
+
+        return send(res, 200, {
+          user: { id: user.id, name: user.name },
+          guilds: guilds.map(g => ({
+            id: g.id, name: g.name,
+            channels: g.channels.cache
+              .filter(c => c.type === ChannelType.GuildText && c.permissionsFor(g.members.me)?.has([
+                PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks,
+              ]))
+              .sort((a, b) => a.rawPosition - b.rawPosition)
+              .map(c => ({ id: c.id, name: c.name })),
+          })),
+          polls,
+        });
       }
 
-      if (req.method === 'POST' && m[2]) {
-        if (!user) return send(res, 401, { error: 'سجّل دخول أول' });
-        if (isEnded(poll)) return send(res, 400, { error: 'التصويت منتهي' });
+      // إنشاء تصويت
+      if (req.method === 'POST' && p === '/api/admin/create') {
+        const b = await readBody(req);
+        const guild = client.guilds.cache.get(String(b.guildId));
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية على هذا السيرفر' });
+        const ch = guild.channels.cache.get(String(b.channelId));
+        if (!ch || ch.type !== ChannelType.GuildText) return send(res, 400, { error: 'اختر روم صالح' });
 
-        const body = await readBody(req);
-        const choices = Array.isArray(body.choices) ? [...new Set(body.choices.map(Number))] : [];
-        if (!choices.length || choices.length > poll.maxVotes)
-          return send(res, 400, { error: `اختر من 1 إلى ${poll.maxVotes}` });
-        if (choices.some(c => !Number.isInteger(c) || c < 0 || c >= poll.options.length))
-          return send(res, 400, { error: 'خيار غير صالح' });
-        if (choices.some(c => poll.options[c].userId === user.id))
-          return send(res, 400, { error: 'ما تقدر تصوّت لنفسك' });
+        const title = String(b.title || '').trim().slice(0, 200);
+        if (!title) return send(res, 400, { error: 'اكتب عنوان التصويت' });
 
-        const guild = client.guilds.cache.get(poll.guildId);
-        try { await guild.members.fetch(user.id); }
-        catch { return send(res, 403, { error: 'لازم تكون داخل السيرفر عشان تصوّت' }); }
+        const rawOpts = Array.isArray(b.options) ? b.options : [];
+        const options = [];
+        for (const o of rawOpts) {
+          const name = String((o && o.name) || '').trim().slice(0, 80);
+          const userId = String((o && o.userId) || '').trim();
+          if (!name) return send(res, 400, { error: 'كل مرشح لازم يكون له اسم' });
+          if (userId && !/^\d{17,20}$/.test(userId)) return send(res, 400, { error: `الايدي غير صحيح عند: ${name}` });
+          options.push({ name, userId: userId || null });
+        }
+        if (options.length < 2 || options.length > 20) return send(res, 400, { error: 'لازم من 2 إلى 20 مرشح' });
 
-        poll.votes[user.id] = choices;
+        const maxVotes = Math.min(Math.max(parseInt(b.maxVotes, 10) || 2, 1), Math.min(10, options.length));
+        const hours = Math.min(Math.max(parseInt(b.hours, 10) || 24, 1), 720);
+
+        const id = crypto.randomBytes(4).toString('hex');
+        const poll = {
+          guildId: guild.id, channelId: ch.id, messageId: null, title, options, maxVotes,
+          endsAt: Date.now() + hours * 3600 * 1000, ended: false, finalized: false,
+          createdBy: user.id, createdAt: Date.now(), votes: {},
+        };
+        try {
+          const msg = await ch.send({
+            embeds: [buildEmbed(poll, id, getCounts(poll))],
+            components: buildButtons(poll, id),
+          });
+          poll.messageId = msg.id;
+        } catch (e) {
+          return send(res, 400, { error: 'ما قدرت أرسل في هذا الروم، تأكد من صلاحيات البوت' });
+        }
+        db.polls[id] = poll;
         save();
+        return send(res, 200, { ok: true, id });
+      }
+
+      // إنهاء تصويت
+      if (req.method === 'POST' && p === '/api/admin/end') {
+        const b = await readBody(req);
+        const poll = db.polls[String(b.id)];
+        if (!poll) return send(res, 404, { error: 'التصويت غير موجود' });
+        const guild = client.guilds.cache.get(poll.guildId);
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
+        await finalize(String(b.id));
         return send(res, 200, { ok: true });
       }
     }
@@ -330,111 +394,196 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-/* ---------- Web: page ---------- */
+/* ---------- Web: admin page ---------- */
 const PAGE = `<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>تصويت</title>
+<title>لوحة التصويت</title>
 <style>
   *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#1e1f22;color:#f2f3f5;font-family:'Segoe UI',Tahoma,Arial,sans-serif;padding:16px}
-  .card{width:100%;max-width:460px;background:#0b0b0d;border:1px solid #2a2a2e;border-radius:14px;padding:22px}
-  h1{margin:0 0 4px;font-size:18px;font-weight:700;word-break:break-word}
-  .sub{margin:0 0 16px;color:#80848e;font-size:14px}
-  .user{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;font-size:13px;color:#b5bac1}
-  .user a{color:#8ea1e1;text-decoration:none}
-  .opt{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#18181c;border:1px solid transparent;border-radius:10px;padding:16px;margin-bottom:8px;cursor:pointer;user-select:none}
-  .opt.on{border-color:#5865f2}
-  .opt.off{opacity:.45;cursor:not-allowed}
-  .opt.locked{cursor:default}
-  .opt .bar{position:absolute;inset:0 auto 0 0;background:#5865f244;z-index:0;right:0;left:auto}
-  .opt span,.opt b,.opt small{position:relative;z-index:1}
-  .opt small{color:#80848e;font-size:12px;margin-inline-start:6px}
-  .dot{width:22px;height:22px;border-radius:50%;border:2px solid #b5bac1;flex:none;position:relative;z-index:1}
-  .opt.on .dot{border-color:#5865f2;background:radial-gradient(#5865f2 45%,transparent 50%)}
-  .foot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:13px;color:#b5bac1;gap:8px;flex-wrap:wrap}
-  .btns{display:flex;gap:8px;align-items:center}
-  button,.btn{font:inherit;font-size:14px;font-weight:600;border:0;border-radius:8px;padding:9px 18px;cursor:pointer;text-decoration:none;display:inline-block}
-  .ghost{background:transparent;color:#f2f3f5}
-  .primary{background:#5865f2;color:#fff}
+  body{margin:0;background:#1e1f22;color:#f2f3f5;font-family:'Segoe UI',Tahoma,Arial,sans-serif;padding:20px}
+  .wrap{max-width:640px;margin:0 auto}
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:8px;flex-wrap:wrap}
+  h1{margin:0;font-size:20px}
+  h2{margin:0 0 12px;font-size:16px}
+  h3{margin:0;font-size:16px;word-break:break-word}
+  .card{background:#0b0b0d;border:1px solid #2a2a2e;border-radius:14px;padding:18px;margin-bottom:16px}
+  .muted{color:#80848e;font-size:13px}
+  label{display:block;font-size:13px;color:#b5bac1;margin:10px 0 4px}
+  input,select{width:100%;background:#18181c;color:#f2f3f5;border:1px solid #2a2a2e;border-radius:8px;padding:10px;font:inherit;font-size:14px}
+  input:focus,select:focus{outline:none;border-color:#5865f2}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .crow{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:8px}
+  .crow button{padding:0 12px}
+  button,.btn{font:inherit;font-size:14px;font-weight:600;border:0;border-radius:8px;padding:10px 18px;cursor:pointer;text-decoration:none;display:inline-block;color:#fff}
+  .primary{background:#5865f2}
   .primary:disabled{background:#3b3d8f;color:#8a8cc0;cursor:not-allowed}
-  .msg{margin-top:12px;font-size:13px;color:#f0b232;min-height:18px}
+  .ghost{background:#2b2d31}
+  .danger{background:#da373c}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+  .badge{font-size:12px;padding:3px 10px;border-radius:20px}
+  .live{background:#248046}
+  .end{background:#4e5058}
+  details.opt{background:#18181c;border-radius:10px;margin-top:8px;padding:12px 14px}
+  details summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center;list-style:none}
+  details summary small{color:#80848e;font-size:11px;direction:ltr}
+  .voters{margin-top:10px;padding-top:10px;border-top:1px solid #2a2a2e;font-size:13px;color:#dbdee1}
+  .voters div{padding:3px 0}
+  .msg{margin-top:10px;font-size:13px;min-height:18px}
+  .err{color:#f0b232}.ok{color:#57f287}
+  a{color:#8ea1e1}
 </style>
 </head>
 <body>
-<div class="card" id="root">جاري التحميل...</div>
+<div class="wrap" id="root">جاري التحميل...</div>
 <script>
-var root=document.getElementById('root'),id=location.pathname.split('/').pop(),data=null,sel=new Set(),showRes=false,first=true,msg='';
+var root=document.getElementById('root'),D=null,built=false;
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e;}
-function left(ms){if(ms<=0)return 'انتهى';var m=Math.floor(ms/60000),h=Math.floor(m/60),d=Math.floor(h/24);if(d>=1)return 'باقي '+d+' يوم';if(h>=1)return 'باقي '+h+' ساعة';return 'باقي '+Math.max(m,1)+' دقيقة';}
-async function load(){
-  var r=await fetch('/api/poll/'+id+(showRes?'?results=1':''));
-  if(!r.ok){root.textContent='التصويت غير موجود';return;}
-  data=await r.json();
-  if(first){sel=new Set(data.mine);first=false;}
-  render();
-}
-async function vote(){
-  var r=await fetch('/api/poll/'+id+'/vote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({choices:Array.from(sel)})});
+async function api(path,body){
+  var r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);
   var j={};try{j=await r.json();}catch(e){}
-  if(!r.ok){msg=j.error||'صار خطأ';render();return;}
-  msg='✅ تم تسجيل صوتك';showRes=true;await load();
+  return {ok:r.ok,status:r.status,j:j};
 }
-function toggle(i){
-  if(sel.has(i)){sel.delete(i);}
-  else if(data.maxVotes===1){sel=new Set([i]);}
-  else if(sel.size<data.maxVotes){sel.add(i);}
-  else{msg='وصلت الحد الأقصى ('+data.maxVotes+')';render();return;}
-  msg='';render();
-}
-function render(){
-  root.innerHTML='';
-  var showR=data.ended||showRes;
-  var total=0;if(showR)data.options.forEach(function(o){total+=o.count||0;});
-  root.appendChild(el('h1','',data.title));
-  root.appendChild(el('p','sub',data.ended?'انتهى التصويت':'اختر حتى '+data.maxVotes+(data.maxVotes===1?' إجابة':' إجابات')));
+function timeLeft(ms){if(ms<=0)return 'انتهى';var m=Math.floor(ms/60000),h=Math.floor(m/60),d=Math.floor(h/24);if(d>=1)return 'باقي '+d+' يوم';if(h>=1)return 'باقي '+h+' ساعة';return 'باقي '+Math.max(m,1)+' دقيقة';}
 
-  var ub=el('div','user');
-  if(data.user){ub.appendChild(el('span','','مسجّل باسم: '+data.user.name));}
-  else{var a=el('a','','سجّل دخول بديسكورد');a.href='/login?next='+encodeURIComponent(location.pathname);ub.appendChild(a);}
-  root.appendChild(ub);
-
-  data.options.forEach(function(o,i){
-    var canPick=!data.ended&&data.user&&!o.blocked&&!showR;
-    var row=el('div','opt'+(sel.has(i)?' on':'')+(o.blocked?' off':'')+(canPick?'':' locked'));
-    if(showR){var pct=total?Math.round((o.count||0)/total*100):0;var bar=el('div','bar');bar.style.width=pct+'%';row.appendChild(bar);}
-    var name=el('span','',o.name);
-    if(o.blocked)name.appendChild(el('small','','(ما تقدر تصوّت لنفسك)'));
-    row.appendChild(name);
-    if(showR){row.appendChild(el('b','',(o.count||0)+' • '+(total?Math.round((o.count||0)/total*100):0)+'%'));}
-    else row.appendChild(el('div','dot'));
-    if(canPick)row.onclick=function(){toggle(i);};
-    root.appendChild(row);
-  });
-
-  var foot=el('div','foot');
-  var votes=showR?total:data.totalVoters;
-  foot.appendChild(el('span','',(showR?votes+' أصوات':data.totalVoters+' مشارك')+' • '+left(data.endsAt-Date.now())));
-  var btns=el('div','btns');
-  if(!data.ended){
-    var rb=el('button','ghost',showRes?'رجوع':'عرض النتائج');
-    rb.onclick=function(){showRes=!showRes;msg='';load();};
-    btns.appendChild(rb);
-    if(data.user){
-      var vb=el('button','primary','صوّت');
-      vb.disabled=showRes||sel.size===0;
-      vb.onclick=vote;
-      btns.appendChild(vb);
-    }
+async function load(){
+  var r=await api('/api/admin/data');
+  if(r.status===401){
+    root.innerHTML='';
+    var c=el('div','card');
+    c.appendChild(el('h2','','لوحة التصويت'));
+    c.appendChild(el('p','muted','سجّل دخول بحساب ديسكورد (لازم تكون عندك صلاحية Manage Server)'));
+    var a=el('a','btn primary','تسجيل الدخول بديسكورد');a.href='/login';c.appendChild(a);
+    root.appendChild(c);return;
   }
-  foot.appendChild(btns);
-  root.appendChild(foot);
-  root.appendChild(el('div','msg',msg));
+  if(!r.ok){root.textContent=r.j.error||'صار خطأ';return;}
+  D=r.j;
+  if(!built){buildShell();built=true;}
+  renderList();
+}
+
+function buildShell(){
+  root.innerHTML='';
+  var top=el('div','top');
+  top.appendChild(el('h1','','🗳️ لوحة التصويت'));
+  var right=el('div','row');
+  right.appendChild(el('span','muted',D.user.name));
+  var rf=el('button','ghost','تحديث');rf.onclick=load;right.appendChild(rf);
+  top.appendChild(right);
+  root.appendChild(top);
+
+  var f=el('div','card');
+  f.appendChild(el('h2','','تصويت جديد'));
+  if(!D.guilds.length){
+    f.appendChild(el('p','muted','ما لقيت سيرفر عندك فيه صلاحية والبوت موجود فيه.'));
+    root.appendChild(f);root.appendChild(el('div','',''));var l0=el('div','');l0.id='list';root.appendChild(l0);return;
+  }
+
+  f.appendChild(el('label','','السيرفر'));
+  var gs=el('select');gs.id='guild';
+  D.guilds.forEach(function(g){var o=el('option','',g.name);o.value=g.id;gs.appendChild(o);});
+  f.appendChild(gs);
+
+  f.appendChild(el('label','','الروم اللي ينرسل فيه التصويت'));
+  var cs=el('select');cs.id='channel';f.appendChild(cs);
+  function fillChannels(){
+    cs.innerHTML='';
+    var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
+    g.channels.forEach(function(c){var o=el('option','','# '+c.name);o.value=c.id;cs.appendChild(o);});
+  }
+  gs.onchange=fillChannels;fillChannels();
+
+  f.appendChild(el('label','','عنوان التصويت'));
+  var ti=el('input');ti.id='title';ti.placeholder='مثال: أفضل ضابط لهذا الشهر';f.appendChild(ti);
+
+  var two=el('div','two');
+  var d1=el('div');d1.appendChild(el('label','','أقصى أصوات لكل شخص'));
+  var mv=el('input');mv.id='maxVotes';mv.type='number';mv.min=1;mv.max=10;mv.value=2;d1.appendChild(mv);
+  var d2=el('div');d2.appendChild(el('label','','المدة (ساعات)'));
+  var hr=el('input');hr.id='hours';hr.type='number';hr.min=1;hr.max=720;hr.value=24;d2.appendChild(hr);
+  two.appendChild(d1);two.appendChild(d2);f.appendChild(two);
+
+  f.appendChild(el('label','','المرشحين (الاسم + ايدي ديسكورد اختياري عشان ما يصوّت لنفسه)'));
+  var rows=el('div');rows.id='rows';f.appendChild(rows);
+  function addRow(){
+    var r=el('div','crow');
+    var n=el('input');n.placeholder='الاسم';
+    var u=el('input');u.placeholder='Copy User ID (اختياري)';u.inputMode='numeric';u.style.direction='ltr';
+    var x=el('button','ghost','✕');x.onclick=function(){r.remove();};
+    r.appendChild(n);r.appendChild(u);r.appendChild(x);rows.appendChild(r);
+  }
+  addRow();addRow();addRow();
+  var add=el('button','ghost','+ إضافة مرشح');add.onclick=addRow;f.appendChild(add);
+  f.appendChild(el('p','muted','عشان تجيب الايدي: فعّل Developer Mode في ديسكورد ثم كليك يمين على الشخص ثم Copy User ID.'));
+
+  var go=el('button','primary','نشر التصويت في ديسكورد');
+  var msg=el('div','msg');
+  go.onclick=async function(){
+    var opts=[];
+    rows.querySelectorAll('.crow').forEach(function(r){
+      var n=r.children[0].value.trim(),u=r.children[1].value.trim();
+      if(n||u)opts.push({name:n,userId:u});
+    });
+    go.disabled=true;msg.className='msg';msg.textContent='جاري النشر...';
+    var r=await api('/api/admin/create',{
+      guildId:gs.value,channelId:cs.value,title:ti.value,
+      maxVotes:mv.value,hours:hr.value,options:opts
+    });
+    go.disabled=false;
+    if(!r.ok){msg.className='msg err';msg.textContent=r.j.error||'صار خطأ';return;}
+    msg.className='msg ok';msg.textContent='✅ تم نشر التصويت في ديسكورد';
+    ti.value='';rows.innerHTML='';addRow();addRow();addRow();
+    load();
+  };
+  f.appendChild(go);f.appendChild(msg);
+  root.appendChild(f);
+
+  var h=el('h2','','التصويتات');h.style.margin='24px 0 12px';root.appendChild(h);
+  var l=el('div');l.id='list';root.appendChild(l);
+}
+
+function renderList(){
+  var box=document.getElementById('list');box.innerHTML='';
+  if(!D.polls.length){box.appendChild(el('p','muted','ما فيه تصويتات بعد'));return;}
+  D.polls.forEach(function(p){
+    var c=el('div','card');
+    var h=el('div','row');
+    h.appendChild(el('h3','',p.title));
+    h.appendChild(el('span','badge '+(p.ended?'end':'live'),p.ended?'منتهي':'شغال'));
+    c.appendChild(h);
+    c.appendChild(el('div','muted',p.guildName+' • '+p.totalVoters+' مشارك • '+(p.ended?'انتهى':timeLeft(p.endsAt-Date.now()))+' • ID: '+p.id));
+    p.options.forEach(function(o){
+      var d=document.createElement('details');d.className='opt';
+      var s=document.createElement('summary');
+      var nm=el('span','',o.name);
+      if(o.userId){nm.appendChild(el('small','',' '+o.userId));}
+      s.appendChild(nm);
+      s.appendChild(el('b','',o.count+' صوت'));
+      d.appendChild(s);
+      var v=el('div','voters');
+      if(!o.voters.length)v.appendChild(el('span','muted','ما أحد صوّت له'));
+      o.voters.forEach(function(x){v.appendChild(el('div','',x.name+'  ('+x.id+')'));});
+      d.appendChild(v);c.appendChild(d);
+    });
+    var act=el('div','row');act.style.marginTop='14px';
+    var a=el('a','btn ghost','فتح الرسالة في ديسكورد');a.href=p.link;a.target='_blank';act.appendChild(a);
+    if(!p.ended){
+      var e=el('button','danger','إنهاء التصويت');
+      e.onclick=async function(){
+        if(!confirm('تنهي هذا التصويت الحين؟'))return;
+        e.disabled=true;
+        await api('/api/admin/end',{id:p.id});
+        load();
+      };
+      act.appendChild(e);
+    }
+    c.appendChild(act);
+    box.appendChild(c);
+  });
 }
 load();
-setInterval(function(){if(data&&!data.ended)load();},20000);
 </script>
 </body>
 </html>`;
