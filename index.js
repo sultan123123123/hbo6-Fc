@@ -1,40 +1,33 @@
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const {
   Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, SlashCommandBuilder, PermissionFlagsBits, REST, Routes, MessageFlags,
 } = require('discord.js');
-const mongoose = require('mongoose');
 
-/* ---------- Database ---------- */
-const Poll = mongoose.model('Poll', new mongoose.Schema({
-  guildId: String,
-  channelId: String,
-  messageId: { type: String, index: true },
-  title: String,
-  options: [String],
-  maxVotes: { type: Number, default: 2 },
-  ended: { type: Boolean, default: false },
-  createdBy: String,
-}, { timestamps: true }));
+/* ---------- Storage (JSON file) ---------- */
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'polls.json');
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const voteSchema = new mongoose.Schema({
-  pollId: { type: mongoose.Schema.Types.ObjectId, index: true },
-  userId: String,
-  option: Number,
-});
-voteSchema.index({ pollId: 1, userId: 1, option: 1 }, { unique: true });
-const Vote = mongoose.model('Vote', voteSchema);
+let db = { polls: {} };
+try {
+  if (fs.existsSync(DATA_FILE)) db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+} catch (e) {
+  console.error('⚠️ ما قدرت أقرأ ملف البيانات، بيبدأ فاضي:', e.message);
+}
+
+function save() {
+  const tmp = DATA_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(db));
+  fs.renameSync(tmp, DATA_FILE);
+}
 
 /* ---------- Helpers ---------- */
-const locks = new Set();
-
-async function getCounts(poll) {
-  const rows = await Vote.aggregate([
-    { $match: { pollId: poll._id } },
-    { $group: { _id: '$option', c: { $sum: 1 } } },
-  ]);
+function getCounts(poll) {
   const counts = poll.options.map(() => 0);
-  rows.forEach(r => (counts[r._id] = r.c));
+  Object.values(poll.votes).forEach(list => list.forEach(idx => { counts[idx]++; }));
   return counts;
 }
 
@@ -116,29 +109,31 @@ client.on('interactionCreate', async (i) => {
         if (maxVotes > options.length)
           return i.reply(ephemeral('❌ عدد الأصوات أكثر من عدد الخيارات.'));
 
-        const poll = new Poll({
-          guildId: i.guildId, channelId: i.channelId, title, options, maxVotes, createdBy: i.user.id,
-        });
+        const poll = {
+          guildId: i.guildId, channelId: i.channelId, title, options,
+          maxVotes, ended: false, createdBy: i.user.id, votes: {},
+        };
         const msg = await i.reply({
-          embeds: [buildEmbed(poll, poll.options.map(() => 0))],
+          embeds: [buildEmbed(poll, getCounts(poll))],
           components: buildButtons(poll),
           fetchReply: true,
         });
-        poll.messageId = msg.id;
-        await poll.save();
+        db.polls[msg.id] = poll;
+        save();
         return;
       }
 
       if (sub === 'end') {
-        const poll = await Poll.findOne({ messageId: i.options.getString('message_id'), guildId: i.guildId });
-        if (!poll) return i.reply(ephemeral('❌ ما لقيت تصويت بهذا الايدي.'));
+        const messageId = i.options.getString('message_id').trim();
+        const poll = db.polls[messageId];
+        if (!poll || poll.guildId !== i.guildId) return i.reply(ephemeral('❌ ما لقيت تصويت بهذا الايدي.'));
         if (poll.ended) return i.reply(ephemeral('⚠️ التصويت منتهي أصلاً.'));
         poll.ended = true;
-        await poll.save();
+        save();
 
-        const counts = await getCounts(poll);
+        const counts = getCounts(poll);
         const channel = await client.channels.fetch(poll.channelId);
-        const msg = await channel.messages.fetch(poll.messageId);
+        const msg = await channel.messages.fetch(messageId);
         await msg.edit({ embeds: [buildEmbed(poll, counts)], components: buildButtons(poll, true) });
 
         const max = Math.max(...counts);
@@ -152,35 +147,27 @@ client.on('interactionCreate', async (i) => {
     /* --- Vote buttons --- */
     if (i.isButton() && i.customId.startsWith('vote:')) {
       const idx = parseInt(i.customId.split(':')[1], 10);
-      const lockKey = `${i.message.id}:${i.user.id}`;
-      if (locks.has(lockKey)) return i.deferUpdate();
-      locks.add(lockKey);
+      const poll = db.polls[i.message.id];
+      if (!poll) return i.reply(ephemeral('❌ هذا التصويت غير موجود.'));
+      if (poll.ended) return i.reply(ephemeral('🔒 التصويت منتهي.'));
 
-      try {
-        const poll = await Poll.findOne({ messageId: i.message.id });
-        if (!poll) return i.reply(ephemeral('❌ هذا التصويت غير موجود.'));
-        if (poll.ended) return i.reply(ephemeral('🔒 التصويت منتهي.'));
+      const mine = poll.votes[i.user.id] || [];
+      let notice;
 
-        let notice;
-        const existing = await Vote.findOne({ pollId: poll._id, userId: i.user.id, option: idx });
-
-        if (existing) {
-          await existing.deleteOne();
-          notice = `↩️ سحبت صوتك من **${poll.options[idx]}**`;
-        } else {
-          const used = await Vote.countDocuments({ pollId: poll._id, userId: i.user.id });
-          if (used >= poll.maxVotes)
-            return i.reply(ephemeral(`❌ وصلت الحد الأقصى (${poll.maxVotes} أصوات). اضغط على خيار صوّتّ له عشان تسحب صوتك وتغيّره.`));
-          await Vote.create({ pollId: poll._id, userId: i.user.id, option: idx });
-          notice = `✅ صوّتّ لـ **${poll.options[idx]}** (${used + 1}/${poll.maxVotes})`;
-        }
-
-        const counts = await getCounts(poll);
-        await i.update({ embeds: [buildEmbed(poll, counts)], components: buildButtons(poll) });
-        await i.followUp(ephemeral(notice));
-      } finally {
-        locks.delete(lockKey);
+      if (mine.includes(idx)) {
+        poll.votes[i.user.id] = mine.filter(v => v !== idx);
+        if (!poll.votes[i.user.id].length) delete poll.votes[i.user.id];
+        notice = `↩️ سحبت صوتك من **${poll.options[idx]}**`;
+      } else {
+        if (mine.length >= poll.maxVotes)
+          return i.reply(ephemeral(`❌ وصلت الحد الأقصى (${poll.maxVotes} أصوات). اضغط على خيار صوّتّ له عشان تسحب صوتك وتغيّره.`));
+        poll.votes[i.user.id] = [...mine, idx];
+        notice = `✅ صوّتّ لـ **${poll.options[idx]}** (${mine.length + 1}/${poll.maxVotes})`;
       }
+      save();
+
+      await i.update({ embeds: [buildEmbed(poll, getCounts(poll))], components: buildButtons(poll) });
+      await i.followUp(ephemeral(notice));
     }
   } catch (err) {
     console.error(err);
@@ -188,6 +175,4 @@ client.on('interactionCreate', async (i) => {
   }
 });
 
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => client.login(process.env.TOKEN))
-  .catch(console.error);
+client.login(process.env.TOKEN).catch(console.error);
