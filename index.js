@@ -293,6 +293,7 @@ const server = http.createServer(async (req, res) => {
       // بيانات اللوحة
       if (req.method === 'GET' && p === '/api/admin/data') {
         const guilds = await managedGuilds(user.id);
+        console.log(`[admin] user=${user.id} botGuilds=${client.guilds.cache.size} allowed=${guilds.length} adminIds=${ADMIN_IDS.length}`);
         const ids = new Set(guilds.map(g => g.id));
         const polls = [];
         const entries = Object.entries(db.polls)
@@ -478,6 +479,9 @@ function buildShell(){
   f.appendChild(el('h2','','تصويت جديد'));
   if(!D.guilds.length){
     f.appendChild(el('p','muted','ما لقيت سيرفر عندك فيه صلاحية والبوت موجود فيه.'));
+    f.appendChild(el('p','muted','ايدي حسابك الحالي (انسخه وحطه في ADMIN_IDS على Railway):'));
+    var idBox=el('input');idBox.value=D.user.id;idBox.readOnly=true;idBox.style.direction='ltr';idBox.onclick=function(){idBox.select();};
+    f.appendChild(idBox);
     root.appendChild(f);root.appendChild(el('div','',''));var l0=el('div','');l0.id='list';root.appendChild(l0);return;
   }
 
