@@ -118,7 +118,6 @@ const commands = [
     .setDescription('نظام التصويت')
     .setDMPermission(false)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addSubcommand(s => s.setName('panel').setDescription('رابط لوحة إنشاء التصويتات ومعرفة من صوّت'))
     .addSubcommand(s => s.setName('end').setDescription('إنهاء تصويت الآن')
       .addStringOption(o => o.setName('poll_id').setDescription('ايدي التصويت (تلقاه أسفل الرسالة)').setRequired(true))),
 ].map(c => c.toJSON());
@@ -136,11 +135,6 @@ client.on('interactionCreate', async (i) => {
     /* --- Slash commands --- */
     if (i.isChatInputCommand() && i.commandName === 'poll') {
       const sub = i.options.getSubcommand();
-
-      if (sub === 'panel') {
-        if (!BASE_URL) return i.reply(ephemeral('❌ BASE_URL غير محدد في المتغيرات.'));
-        return i.reply(ephemeral(`🔗 لوحة التصويت: ${BASE_URL}/admin`));
-      }
 
       if (sub === 'end') {
         await i.deferReply({ flags: MessageFlags.Ephemeral });
