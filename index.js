@@ -573,7 +573,7 @@ function buildShell(){
     var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
     g.channels.forEach(function(c){var o=el('option','','# '+c.name);o.value=c.id;cs.appendChild(o);});
   }
-  gs.onchange=function(){fillChannels();fillRoster();};fillChannels();fillRoster();
+  gs.onchange=function(){fillChannels();if(fillRosterRef)fillRosterRef();};fillChannels();
 
   f.appendChild(el('label','','عنوان التصويت'));
   var ti=el('input');ti.id='title';ti.placeholder='مثال: أفضل ضابط لهذا الشهر';f.appendChild(ti);
@@ -602,9 +602,10 @@ function buildShell(){
   function fillRoster(){
     rosterBox.innerHTML='';
     var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
+    var roster=g.roster||[];
     rosterBox.appendChild(el('div','muted','المرشحين المحفوظين لهذا السيرفر:'));
-    if(!g.roster.length){rosterBox.appendChild(el('div','muted','ما فيه أحد محفوظ بعد')); return;}
-    g.roster.forEach(function(r){
+    if(!roster.length){rosterBox.appendChild(el('div','muted','ما فيه أحد محفوظ بعد')); return;}
+    roster.forEach(function(r){
       var row=el('div','rrow');
       row.appendChild(el('span','',r.name+(r.userId?'  '+r.userId:'')));
       var addBtn=el('button','ghost small','إضافة');
@@ -629,6 +630,7 @@ function buildShell(){
     });
   }
   fillRosterRef=fillRoster;
+  fillRoster();
 
   var go=el('button','primary','نشر التصويت في ديسكورد');
   var msg=el('div','msg');
