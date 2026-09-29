@@ -502,6 +502,9 @@ const PAGE = `<!DOCTYPE html>
   .end{background:#4e5058}
   details.opt{background:#18181c;border-radius:10px;margin-top:8px;padding:12px 14px}
   details summary{cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details summary .arrow{color:#80848e;font-size:12px;margin-inline-end:6px;transition:transform .15s}
+  details[open] summary .arrow{transform:rotate(90deg)}
   details summary small{color:#80848e;font-size:11px;direction:ltr}
   .voters{margin-top:10px;padding-top:10px;border-top:1px solid #2a2a2e;font-size:13px;color:#dbdee1}
   .voters div{padding:3px 0}
@@ -515,7 +518,7 @@ const PAGE = `<!DOCTYPE html>
 <body>
 <div class="wrap" id="root">جاري التحميل...</div>
 <script>
-var root=document.getElementById('root'),D=null,built=false,fillRosterRef=null;
+var root=document.getElementById('root'),D=null,built=false,fillRosterRef=null,copyPollRef=null;
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e;}
 async function api(path,body){
   var r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);
@@ -598,6 +601,21 @@ function buildShell(){
   var add=el('button','ghost','+ إضافة مرشح');add.onclick=function(){addRow();};f.appendChild(add);
   f.appendChild(el('p','muted','عشان تجيب الايدي: فعّل Developer Mode في ديسكورد ثم كليك يمين على الشخص ثم Copy User ID.'));
 
+  function copyPollIntoForm(p){
+    var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
+    if(!g||p.guildName!==g.name){
+      var match=D.guilds.filter(function(x){return x.name===p.guildName;})[0];
+      if(match)gs.value=match.id;
+      fillChannels();
+    }
+    ti.value=p.title;
+    mv.value=p.maxVotes;
+    rows.innerHTML='';
+    p.options.forEach(function(o){addRow(o.name,o.userId);});
+    f.scrollIntoView({behavior:'smooth'});
+  }
+  copyPollRef=copyPollIntoForm;
+
   var rosterBox=el('div');rosterBox.id='rosterBox';rosterBox.style.marginTop='16px';f.appendChild(rosterBox);
   function fillRoster(){
     rosterBox.innerHTML='';
@@ -672,11 +690,14 @@ function renderList(){
       var d=document.createElement('details');d.className='opt';
       var s=document.createElement('summary');
       var nm=el('span','',o.name);
+      var arrow=el('span','arrow','›');
+      nm.insertBefore(arrow,nm.firstChild);
       if(o.userId){nm.appendChild(el('small','',' '+o.userId));}
       s.appendChild(nm);
       s.appendChild(el('b','',o.count+' صوت'));
       d.appendChild(s);
       var v=el('div','voters');
+      v.appendChild(el('p','muted','اضغط على اسم عشان تزيل صوته'));
       if(!o.voters.length)v.appendChild(el('span','muted','ما أحد صوّت له'));
       o.voters.forEach(function(x){
         var row=el('div','vrow');
@@ -696,6 +717,9 @@ function renderList(){
       d.appendChild(v);c.appendChild(d);
     });
     var act=el('div','row');act.style.marginTop='14px';
+    var cp=el('button','ghost','نسخ الأسماء لتصويت جديد');
+    cp.onclick=function(){ if(copyPollRef) copyPollRef(p); };
+    act.appendChild(cp);
     var a=el('a','btn ghost','فتح الرسالة في ديسكورد');a.href=p.link;a.target='_blank';act.appendChild(a);
     if(!p.ended){
       var e=el('button','danger','إنهاء التصويت');
