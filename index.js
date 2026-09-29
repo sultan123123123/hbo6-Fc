@@ -21,11 +21,17 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'vote-data.json');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-let db = { polls: {} };
+let db = { polls: {}, rosters: {} };
 try {
   if (fs.existsSync(DATA_FILE)) db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
 } catch (e) {
   console.error('⚠️ ما قدرت أقرأ ملف البيانات:', e.message);
+}
+db.polls = db.polls || {};
+db.rosters = db.rosters || {};
+function getRoster(gid) {
+  if (!db.rosters[gid]) db.rosters[gid] = [];
+  return db.rosters[gid];
 }
 function save() {
   const tmp = DATA_FILE + '.tmp';
@@ -320,6 +326,7 @@ const server = http.createServer(async (req, res) => {
           user: { id: user.id, name: user.name },
           guilds: guilds.map(g => ({
             id: g.id, name: g.name,
+            roster: getRoster(g.id),
             channels: g.channels.cache
               .filter(c => c.type === ChannelType.GuildText && c.permissionsFor(g.members.me)?.has([
                 PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks,
@@ -352,6 +359,13 @@ const server = http.createServer(async (req, res) => {
           options.push({ name, userId: userId || null });
         }
         if (options.length < 2 || options.length > 20) return send(res, 400, { error: 'لازم من 2 إلى 20 مرشح' });
+
+        const roster = getRoster(guild.id);
+        options.forEach(o => {
+          const existing = roster.find(r => (o.userId && r.userId === o.userId) || (!o.userId && !r.userId && r.name === o.name));
+          if (existing) { existing.name = o.name; existing.userId = o.userId; }
+          else roster.push({ id: crypto.randomBytes(4).toString('hex'), name: o.name, userId: o.userId });
+        });
 
         const maxVotes = Math.min(Math.max(parseInt(b.maxVotes, 10) || 2, 1), Math.min(10, options.length));
         const hours = Math.min(Math.max(parseInt(b.hours, 10) || 24, 1), 720);
@@ -386,6 +400,62 @@ const server = http.createServer(async (req, res) => {
         await finalize(String(b.id));
         return send(res, 200, { ok: true });
       }
+
+      // حذف صوت شخص لمرشح معيّن
+      if (req.method === 'POST' && p === '/api/admin/remove-vote') {
+        const b = await readBody(req);
+        const poll = db.polls[String(b.id)];
+        if (!poll) return send(res, 404, { error: 'التصويت غير موجود' });
+        const guild = client.guilds.cache.get(poll.guildId);
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
+
+        const targetUserId = String(b.userId || '');
+        const idx = parseInt(b.option, 10);
+        const mine = poll.votes[targetUserId] || [];
+        if (!mine.includes(idx)) return send(res, 400, { error: 'ما فيه صوت لحذفه' });
+
+        const rest = mine.filter(v => v !== idx);
+        if (rest.length) poll.votes[targetUserId] = rest; else delete poll.votes[targetUserId];
+        save();
+
+        if (!isEnded(poll)) {
+          try {
+            const ch = await client.channels.fetch(poll.channelId);
+            const msg = await ch.messages.fetch(poll.messageId);
+            await msg.edit({ embeds: [buildEmbed(poll, String(b.id), getCounts(poll))], components: buildButtons(poll, String(b.id)) });
+          } catch (e) { console.error('remove-vote refresh:', e.message); }
+        }
+        return send(res, 200, { ok: true });
+      }
+
+      // إضافة/تعديل مرشح في القائمة المحفوظة
+      if (req.method === 'POST' && p === '/api/admin/roster/upsert') {
+        const b = await readBody(req);
+        const guild = client.guilds.cache.get(String(b.guildId));
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
+
+        const name = String(b.name || '').trim().slice(0, 80);
+        const userId = String(b.userId || '').trim();
+        if (!name) return send(res, 400, { error: 'اكتب اسم' });
+        if (userId && !/^\d{17,20}$/.test(userId)) return send(res, 400, { error: 'الايدي غير صحيح' });
+
+        const roster = getRoster(guild.id);
+        let entry = b.id ? roster.find(r => r.id === String(b.id)) : null;
+        if (entry) { entry.name = name; entry.userId = userId || null; }
+        else { entry = { id: crypto.randomBytes(4).toString('hex'), name, userId: userId || null }; roster.push(entry); }
+        save();
+        return send(res, 200, { ok: true, entry });
+      }
+
+      // حذف مرشح من القائمة المحفوظة
+      if (req.method === 'POST' && p === '/api/admin/roster/delete') {
+        const b = await readBody(req);
+        const guild = client.guilds.cache.get(String(b.guildId));
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
+        db.rosters[guild.id] = getRoster(guild.id).filter(r => r.id !== String(b.id));
+        save();
+        return send(res, 200, { ok: true });
+      }
     }
 
     send(res, 404, 'Not found', 'text/plain; charset=utf-8');
@@ -418,6 +488,9 @@ const PAGE = `<!DOCTYPE html>
   .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .crow{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:8px}
   .crow button{padding:0 12px}
+  .rrow{display:flex;align-items:center;gap:6px;padding:8px 0;border-bottom:1px solid #2a2a2e;font-size:13px}
+  .rrow span{flex:1;word-break:break-word}
+  button.small{padding:5px 10px;font-size:12px}
   button,.btn{font:inherit;font-size:14px;font-weight:600;border:0;border-radius:8px;padding:10px 18px;cursor:pointer;text-decoration:none;display:inline-block;color:#fff}
   .primary{background:#5865f2}
   .primary:disabled{background:#3b3d8f;color:#8a8cc0;cursor:not-allowed}
@@ -432,6 +505,8 @@ const PAGE = `<!DOCTYPE html>
   details summary small{color:#80848e;font-size:11px;direction:ltr}
   .voters{margin-top:10px;padding-top:10px;border-top:1px solid #2a2a2e;font-size:13px;color:#dbdee1}
   .voters div{padding:3px 0}
+  .vrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0}
+  button.small{padding:4px 10px;font-size:12px}
   .msg{margin-top:10px;font-size:13px;min-height:18px}
   .err{color:#f0b232}.ok{color:#57f287}
   a{color:#8ea1e1}
@@ -440,7 +515,7 @@ const PAGE = `<!DOCTYPE html>
 <body>
 <div class="wrap" id="root">جاري التحميل...</div>
 <script>
-var root=document.getElementById('root'),D=null,built=false;
+var root=document.getElementById('root'),D=null,built=false,fillRosterRef=null;
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e;}
 async function api(path,body){
   var r=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:undefined);
@@ -462,6 +537,7 @@ async function load(){
   if(!r.ok){root.textContent=r.j.error||'صار خطأ';return;}
   D=r.j;
   if(!built){buildShell();built=true;}
+  if(fillRosterRef)fillRosterRef();
   renderList();
 }
 
@@ -497,7 +573,7 @@ function buildShell(){
     var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
     g.channels.forEach(function(c){var o=el('option','','# '+c.name);o.value=c.id;cs.appendChild(o);});
   }
-  gs.onchange=fillChannels;fillChannels();
+  gs.onchange=function(){fillChannels();fillRoster();};fillChannels();fillRoster();
 
   f.appendChild(el('label','','عنوان التصويت'));
   var ti=el('input');ti.id='title';ti.placeholder='مثال: أفضل ضابط لهذا الشهر';f.appendChild(ti);
@@ -511,16 +587,48 @@ function buildShell(){
 
   f.appendChild(el('label','','المرشحين (الاسم + ايدي ديسكورد اختياري عشان ما يصوّت لنفسه)'));
   var rows=el('div');rows.id='rows';f.appendChild(rows);
-  function addRow(){
+  function addRow(name,userId){
     var r=el('div','crow');
-    var n=el('input');n.placeholder='الاسم';
-    var u=el('input');u.placeholder='Copy User ID (اختياري)';u.inputMode='numeric';u.style.direction='ltr';
+    var n=el('input');n.placeholder='الاسم';n.value=name||'';
+    var u=el('input');u.placeholder='Copy User ID (اختياري)';u.inputMode='numeric';u.style.direction='ltr';u.value=userId||'';
     var x=el('button','ghost','✕');x.onclick=function(){r.remove();};
     r.appendChild(n);r.appendChild(u);r.appendChild(x);rows.appendChild(r);
   }
   addRow();addRow();addRow();
-  var add=el('button','ghost','+ إضافة مرشح');add.onclick=addRow;f.appendChild(add);
+  var add=el('button','ghost','+ إضافة مرشح');add.onclick=function(){addRow();};f.appendChild(add);
   f.appendChild(el('p','muted','عشان تجيب الايدي: فعّل Developer Mode في ديسكورد ثم كليك يمين على الشخص ثم Copy User ID.'));
+
+  var rosterBox=el('div');rosterBox.id='rosterBox';rosterBox.style.marginTop='16px';f.appendChild(rosterBox);
+  function fillRoster(){
+    rosterBox.innerHTML='';
+    var g=D.guilds.filter(function(x){return x.id===gs.value;})[0];
+    rosterBox.appendChild(el('div','muted','المرشحين المحفوظين لهذا السيرفر:'));
+    if(!g.roster.length){rosterBox.appendChild(el('div','muted','ما فيه أحد محفوظ بعد')); return;}
+    g.roster.forEach(function(r){
+      var row=el('div','rrow');
+      row.appendChild(el('span','',r.name+(r.userId?'  '+r.userId:'')));
+      var addBtn=el('button','ghost small','إضافة');
+      addBtn.onclick=function(){addRow(r.name,r.userId);};
+      var editBtn=el('button','ghost small','تعديل');
+      editBtn.onclick=async function(){
+        var newName=prompt('الاسم:',r.name);if(newName===null)return;
+        var newId=prompt('ايدي ديسكورد (اتركه فاضي بدون ايدي):',r.userId||'');if(newId===null)return;
+        var res=await api('/api/admin/roster/upsert',{guildId:g.id,id:r.id,name:newName.trim(),userId:newId.trim()});
+        if(!res.ok){alert(res.j.error||'صار خطأ');return;}
+        load();
+      };
+      var delBtn=el('button','ghost small','حذف');
+      delBtn.onclick=async function(){
+        if(!confirm('تحذف '+r.name+' من القائمة المحفوظة؟'))return;
+        var res=await api('/api/admin/roster/delete',{guildId:g.id,id:r.id});
+        if(!res.ok){alert(res.j.error||'صار خطأ');return;}
+        load();
+      };
+      row.appendChild(addBtn);row.appendChild(editBtn);row.appendChild(delBtn);
+      rosterBox.appendChild(row);
+    });
+  }
+  fillRosterRef=fillRoster;
 
   var go=el('button','primary','نشر التصويت في ديسكورد');
   var msg=el('div','msg');
@@ -558,7 +666,7 @@ function renderList(){
     h.appendChild(el('span','badge '+(p.ended?'end':'live'),p.ended?'منتهي':'شغال'));
     c.appendChild(h);
     c.appendChild(el('div','muted',p.guildName+' • '+p.totalVoters+' مشارك • '+(p.ended?'انتهى':timeLeft(p.endsAt-Date.now()))+' • ID: '+p.id));
-    p.options.forEach(function(o){
+    p.options.forEach(function(o,oi){
       var d=document.createElement('details');d.className='opt';
       var s=document.createElement('summary');
       var nm=el('span','',o.name);
@@ -568,7 +676,21 @@ function renderList(){
       d.appendChild(s);
       var v=el('div','voters');
       if(!o.voters.length)v.appendChild(el('span','muted','ما أحد صوّت له'));
-      o.voters.forEach(function(x){v.appendChild(el('div','',x.name+'  ('+x.id+')'));});
+      o.voters.forEach(function(x){
+        var row=el('div','vrow');
+        row.appendChild(el('span','',x.name+'  ('+x.id+')'));
+        var rm=el('button','ghost small','إزالة');
+        rm.onclick=async function(ev){
+          ev.preventDefault();
+          if(!confirm('تزيل صوت '+x.name+' عن '+o.name+'؟'))return;
+          rm.disabled=true;
+          var r=await api('/api/admin/remove-vote',{id:p.id,userId:x.id,option:oi});
+          if(!r.ok){alert(r.j.error||'صار خطأ');rm.disabled=false;return;}
+          load();
+        };
+        row.appendChild(rm);
+        v.appendChild(row);
+      });
       d.appendChild(v);c.appendChild(d);
     });
     var act=el('div','row');act.style.marginTop='14px';
