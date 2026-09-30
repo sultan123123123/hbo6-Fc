@@ -395,6 +395,31 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true });
       }
 
+      // تمديد تصويت (يشتغل حتى لو منتهي، والأصوات القديمة تبقى)
+      if (req.method === 'POST' && p === '/api/admin/extend') {
+        const b = await readBody(req);
+        const id = String(b.id);
+        const poll = db.polls[id];
+        if (!poll) return send(res, 404, { error: 'التصويت غير موجود' });
+        const guild = client.guilds.cache.get(poll.guildId);
+        if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
+
+        const hours = Math.min(Math.max(parseInt(b.hours, 10) || 0, 1), 720);
+        poll.endsAt = Date.now() + hours * 3600 * 1000;
+        poll.ended = false;
+        poll.finalized = false;
+        save();
+
+        try {
+          const ch = await client.channels.fetch(poll.channelId);
+          const msg = await ch.messages.fetch(poll.messageId);
+          await msg.edit({ embeds: [buildEmbed(poll, id, getCounts(poll))], components: buildButtons(poll, id) });
+        } catch (e) {
+          return send(res, 400, { error: 'ما قدرت أحدّث رسالة ديسكورد، تأكد إنها ما انحذفت' });
+        }
+        return send(res, 200, { ok: true });
+      }
+
       // حذف صوت شخص لمرشح معيّن
       if (req.method === 'POST' && p === '/api/admin/remove-vote') {
         const b = await readBody(req);
@@ -724,6 +749,19 @@ function renderList(){
         load();
       };
       act.appendChild(e);
+    } else {
+      var ex=el('button','primary','تمديد التصويت');
+      ex.onclick=async function(){
+        var h=prompt('كم ساعة تبي تمدد التصويت؟ (النتائج الحالية تبقى)','24');
+        if(h===null)return;
+        h=parseInt(h,10);
+        if(!h||h<1){alert('اكتب رقم ساعات صحيح');return;}
+        ex.disabled=true;
+        var r=await api('/api/admin/extend',{id:p.id,hours:h});
+        if(!r.ok){alert(r.j.error||'صار خطأ');ex.disabled=false;return;}
+        load();
+      };
+      act.appendChild(ex);
     }
     c.appendChild(act);
     box.appendChild(c);
