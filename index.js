@@ -404,8 +404,8 @@ const server = http.createServer(async (req, res) => {
         const guild = client.guilds.cache.get(poll.guildId);
         if (!guild || !(await canManage(guild, user.id))) return send(res, 403, { error: 'ما عندك صلاحية' });
 
-        const hours = Math.min(Math.max(parseInt(b.hours, 10) || 0, 1), 720);
-        poll.endsAt = Date.now() + hours * 3600 * 1000;
+        const minutes = Math.min(Math.max(parseInt(b.minutes, 10) || 0, 1), 43200);
+        poll.endsAt = Date.now() + minutes * 60 * 1000;
         poll.ended = false;
         poll.finalized = false;
         save();
@@ -752,12 +752,12 @@ function renderList(){
     } else {
       var ex=el('button','primary','تمديد التصويت');
       ex.onclick=async function(){
-        var h=prompt('كم ساعة تبي تمدد التصويت؟ (النتائج الحالية تبقى)','24');
+        var h=prompt('كم دقيقة تبي تمدد التصويت؟ (النتائج الحالية تبقى)','60');
         if(h===null)return;
         h=parseInt(h,10);
-        if(!h||h<1){alert('اكتب رقم ساعات صحيح');return;}
+        if(!h||h<1){alert('اكتب رقم دقايق صحيح');return;}
         ex.disabled=true;
-        var r=await api('/api/admin/extend',{id:p.id,hours:h});
+        var r=await api('/api/admin/extend',{id:p.id,minutes:h});
         if(!r.ok){alert(r.j.error||'صار خطأ');ex.disabled=false;return;}
         load();
       };
